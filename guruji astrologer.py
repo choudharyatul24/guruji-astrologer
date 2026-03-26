@@ -5,7 +5,35 @@ from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+import tempfile
 
+# 1. Ye function secret ko temporary file mein convert karega
+def get_google_secret_path():
+    if "google" in st.secrets:
+        # Streamlit secrets se JSON nikal kar temp file banana
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as f:
+            f.write(st.secrets["google"]["client_secret"])
+            return f.name
+    return PATHS["secret"]  # Local testing ke liye fallback
+
+# 2. Login function mein ise use karo
+def login_yt(channel_label):
+    APP_URL = "https://gurujiblast-5pefd83xlnpydtkb3wydut.streamlit.app"
+    token_path = os.path.join(PATHS["yt_acc"], f"{channel_label}.pickle")
+    
+    # YAHAN CHANGE HAI: File path ki jagah function call karo
+    secret_file_path = get_google_secret_path()
+    
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(
+            secret_file_path, 
+            scopes=[
+                'https://www.googleapis.com/auth/youtube.upload',
+                'https://www.googleapis.com/auth/youtube.force-ssl'
+            ],
+            redirect_uri=APP_URL
+        )
+        # ... baaki ka login code same rahega ...
 # ═══════════════════════════════════════════
 # 📁 PATHS & SESSION STATE
 # ═══════════════════════════════════════════
