@@ -17,11 +17,21 @@ def get_google_secret_path():
     return PATHS["secret"]  # Local testing ke liye fallback
 
 # 2. Login function mein ise use karo
+# 1. Ye function secrets se data nikal kar temporary file banayega
+def get_google_secret_path():
+    if "google" in st.secrets:
+        # Streamlit secrets se JSON nikal kar temp file banana
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as f:
+            f.write(st.secrets["google"]["client_secret"])
+            return f.name
+    return PATHS["secret"]  # Local testing ke liye fallback
+
+# 2. Login function mein ise use karo
 def login_yt(channel_label):
     APP_URL = "https://gurujiblast-5pefd83xlnpydtkb3wydut.streamlit.app"
     token_path = os.path.join(PATHS["yt_acc"], f"{channel_label}.pickle")
     
-    # YAHAN CHANGE HAI: File path ki jagah function call karo
+    # FILE PATH KI JAGAH FUNCTION CALL KARO
     secret_file_path = get_google_secret_path()
     
     try:
@@ -33,6 +43,7 @@ def login_yt(channel_label):
             ],
             redirect_uri=APP_URL
         )
+        # ... baaki ka logic (authorization_url, fetch_token) same rahega ...
         # ... baaki ka login code same rahega ...
 # ═══════════════════════════════════════════
 # 📁 PATHS & SESSION STATE
