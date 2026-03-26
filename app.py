@@ -2,10 +2,11 @@ import streamlit as st
 import tempfile
 import os, pickle, subprocess, time, json, requests
 from yt_dlp import YoutubeDL
+
 from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import Flow   # ✅ FIXED
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload MediaFileUpload
 
 # ═══════════════════════════════════════════
 # 📁 PATHS & SESSION STATE
@@ -85,33 +86,41 @@ def get_yt_credentials(channel_label):
     return creds
 
 def login_yt(channel_label):
-    APP_URL = "https://gurujiblast-5pefd83xlnpydtkb3wydut.streamlit.app"
+    APP_URL = "https://gurujiblast-5pefd83xlnpydtkb3wydut.streamlit.app/"
     token_path = os.path.join(PATHS["yt_acc"], f"{channel_label}.pickle")
-    
-    # --- 1. Ye naya rasta banaya (Secrets se file nikalne ke liye) ---
-    secret_file_path = get_google_secret_path() 
-    
+
+    secret_file_path = get_google_secret_path()
+
     try:
-        # --- 2. Ab yahan PATHS["secret"] ki jagah secret_file_path use hoga ---
-        flow = InstalledAppFlow.from_client_secrets_file(
-            secret_file_path, 
+        flow = Flow.from_client_secrets_file(
+            secret_file_path,
             scopes=[
                 'https://www.googleapis.com/auth/youtube.upload',
                 'https://www.googleapis.com/auth/youtube.force-ssl'
             ],
             redirect_uri=APP_URL
         )
-        
-        auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+
+        auth_url, _ = flow.authorization_url(
+            prompt='consent',
+            access_type='offline',
+            include_granted_scopes='true'
+        )
+
         st.link_button(f"🚀 LOGIN YouTube: {channel_label.upper()}", auth_url)
-        
-        if "code" in st.query_params:
-            flow.fetch_token(code=st.query_params["code"])
+
+        # ✅ Query params handle
+        query_params = st.query_params
+
+        if "code" in query_params:
+            flow.fetch_token(code=query_params["code"])
+
             with open(token_path, 'wb') as f:
                 pickle.dump(flow.credentials, f)
-            st.success("✅ YouTube Account Saved!")
+
+            st.success("✅ YouTube Account Connected Successfully!")
             st.rerun()
-            
+
     except Exception as e:
         st.error(f"YT Login Error: {e}")
 
