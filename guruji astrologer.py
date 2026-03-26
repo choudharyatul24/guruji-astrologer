@@ -1,4 +1,5 @@
 import streamlit as st
+import tempfile
 import os, pickle, subprocess, time, json, requests
 from yt_dlp import YoutubeDL
 from google.auth.transport.requests import Request
@@ -15,6 +16,17 @@ PATHS = {
     "clips":  "clips",
     "output": "output_videos"
 }
+# --- YE FUNCTION ADD KARNA ZAROORI HAI ---
+def get_google_secret_path():
+    """Streamlit secrets se JSON nikal kar temporary file banata hai"""
+    if "google" in st.secrets:
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as f:
+                f.write(st.secrets["google"]["client_secret"])
+                return f.name
+        except Exception as e:
+            st.error(f"Secret Error: {e}")
+    return PATHS["secret"]
 for p in PATHS.values():
     if "." not in os.path.basename(p):
         os.makedirs(p, exist_ok=True)
@@ -75,23 +87,31 @@ def get_yt_credentials(channel_label):
 def login_yt(channel_label):
     APP_URL = "https://gurujiblast-5pefd83xlnpydtkb3wydut.streamlit.app"
     token_path = os.path.join(PATHS["yt_acc"], f"{channel_label}.pickle")
+    
+    # --- 1. Ye naya rasta banaya (Secrets se file nikalne ke liye) ---
+    secret_file_path = get_google_secret_path() 
+    
     try:
+        # --- 2. Ab yahan PATHS["secret"] ki jagah secret_file_path use hoga ---
         flow = InstalledAppFlow.from_client_secrets_file(
-            PATHS["secret"],
+            secret_file_path, 
             scopes=[
                 'https://www.googleapis.com/auth/youtube.upload',
                 'https://www.googleapis.com/auth/youtube.force-ssl'
             ],
             redirect_uri=APP_URL
         )
+        
         auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
         st.link_button(f"🚀 LOGIN YouTube: {channel_label.upper()}", auth_url)
+        
         if "code" in st.query_params:
             flow.fetch_token(code=st.query_params["code"])
             with open(token_path, 'wb') as f:
                 pickle.dump(flow.credentials, f)
             st.success("✅ YouTube Account Saved!")
             st.rerun()
+            
     except Exception as e:
         st.error(f"YT Login Error: {e}")
 
