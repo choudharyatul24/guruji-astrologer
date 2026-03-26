@@ -86,7 +86,7 @@ def get_yt_credentials(channel_label):
     return creds
 
 def login_yt(channel_label):
-    APP_URL = "https://gurujiblast-5pefd83xlnpydtkb3wydut.streamlit.app/"
+    APP_URL = "https://gurujiblast-5pefd83xlnpydtkb3wydut.streamlit.app"
     token_path = os.path.join(PATHS["yt_acc"], f"{channel_label}.pickle")
 
     secret_file_path = get_google_secret_path()
