@@ -19,20 +19,16 @@ PATHS = {
 }
 
 def get_google_secret_path():
-    """Streamlit secrets se JSON nikal kar temporary file banata hai"""
     if "google" in st.secrets:
         try:
+            secret_content = st.secrets["google"]["client_secret"]
+            # Agar string hai toh directly likhो
             with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as f:
-                f.write(st.secrets["google"]["client_secret"])
+                f.write(secret_content)
                 return f.name
         except Exception as e:
             st.error(f"Secret Error: {e}")
     return PATHS["secret"]
-
-for p in PATHS.values():
-    if "." not in os.path.basename(p):
-        os.makedirs(p, exist_ok=True)
-os.makedirs("accounts", exist_ok=True)
 
 DEFAULTS = {
     "targets_yt": [], "targets_ig": [], "targets_fb": [],
