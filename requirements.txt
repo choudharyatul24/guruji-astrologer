@@ -5,3 +5,5 @@ google-auth-oauthlib
 google-auth-httplib2
 yt-dlp
 requests
+yt-dlp
+imageio[ffmpeg]
