@@ -1,9 +1,9 @@
 streamlit
-google-search-results
-google-api-python-client
+yt-dlp           # Iska version hata do taaki latest install ho
+pandas
+Pillow
+moviepy          # Video editing ke liye zaroori
+google-auth
 google-auth-oauthlib
 google-auth-httplib2
-yt-dlp
-requests
-yt-dlp
-imageio[ffmpeg]
+google-api-python-client
