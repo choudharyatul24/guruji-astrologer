@@ -87,7 +87,6 @@ def get_yt_credentials(channel_label):
     return creds
 
 def login_yt(channel_label):
-    # ✅ UPDATED URL - Sahi Streamlit URL
     APP_URL = "https://guruji-astrologer-woafgd6jcjcjpv8bbdmpks.streamlit.app"
     token_path = os.path.join(PATHS["yt_acc"], f"{channel_label}.pickle")
 
@@ -124,6 +123,90 @@ def login_yt(channel_label):
 
     except Exception as e:
         st.error(f"YT Login Error: {e}")
+
+# ═══════════════════════════════════════════
+# ⬇️ YOUTUBE DOWNLOAD (403 FIX)
+# ═══════════════════════════════════════════
+def download_youtube_video(url, output_path):
+    """
+    YouTube video download with 403 fix.
+    Tries multiple strategies in order.
+    """
+    strategies = [
+        # Strategy 1: Android client + simple format
+        {
+            'outtmpl': output_path,
+            'format': 'best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': (
+                    'Mozilla/5.0 (Linux; Android 11; Pixel 5) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/90.0.4430.91 Mobile Safari/537.36'
+                ),
+            },
+            'retries': 3,
+            'fragment_retries': 3,
+            'ignoreerrors': False,
+        },
+        # Strategy 2: iOS client
+        {
+            'outtmpl': output_path,
+            'format': 'best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios'],
+                }
+            },
+            'retries': 3,
+            'fragment_retries': 3,
+            'ignoreerrors': False,
+        },
+        # Strategy 3: web client fallback
+        {
+            'outtmpl': output_path,
+            'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best',
+            'merge_output_format': 'mp4',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': (
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/120.0.0.0 Safari/537.36'
+                ),
+            },
+            'retries': 5,
+            'fragment_retries': 5,
+            'ignoreerrors': False,
+        },
+    ]
+
+    last_error = None
+    for i, opts in enumerate(strategies):
+        try:
+            # Remove old file if exists from previous failed attempt
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            with YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return True, None
+        except Exception as e:
+            last_error = str(e)
+            st.warning(f"⚠️ Strategy {i+1} failed: {str(e)[:100]}... Trying next...")
+            time.sleep(1)
+
+    return False, last_error
 
 # ═══════════════════════════════════════════
 # 🧹 WATERMARK REMOVAL
@@ -489,18 +572,22 @@ if upload_mode == "Single Video / Link":
     raw_path = st.session_state.raw_path
 
     if source == "YouTube Link":
-        v_url = st.text_input("🔗 YouTube Link")
+        v_url = st.text_input("🔗 YouTube / Shorts Link")
         if v_url and st.button("⬇️ Download"):
-            with st.spinner("Downloading..."):
-                try:
-                    with YoutubeDL({'outtmpl': raw_path,
-                                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                                    'merge_output_format': 'mp4'}) as ydl:
-                        ydl.download([v_url])
+            with st.spinner("⬇️ Downloading video... (thoda wait karo)"):
+                success, error = download_youtube_video(v_url, raw_path)
+                if success:
                     st.session_state.video_ready = True
-                    st.success("✅ Video Ready!")
-                except Exception as e:
-                    st.error(f"Download Error: {e}")
+                    st.success("✅ Video Download Ho Gayi!")
+                else:
+                    st.error(
+                        f"❌ Download fail hua!\n\n"
+                        f"**Error:** {error}\n\n"
+                        f"**Solutions:**\n"
+                        f"- Device se upload karo (YouTube Shorts download block hoti hain)\n"
+                        f"- Alag YouTube link try karo\n"
+                        f"- yt-dlp update karo: `pip install -U yt-dlp`"
+                    )
     else:
         u_file = st.file_uploader("Video Upload", type=["mp4","mov","avi"])
         if u_file:
