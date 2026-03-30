@@ -4,6 +4,7 @@ import os, pickle, subprocess, time, json, requests
 from yt_dlp import YoutubeDL
 
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -18,8 +19,9 @@ PATHS = {
     "output": "output_videos"
 }
 
+APP_URL = "https://guruji-astrologer-woafgd6jcjcjpv8bbdmpks.streamlit.app"
+
 def get_google_secret_path():
-    """Streamlit secrets se JSON nikal kar temporary file banata hai"""
     if "google" in st.secrets:
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as f:
@@ -37,164 +39,161 @@ os.makedirs("accounts", exist_ok=True)
 DEFAULTS = {
     "targets_yt": [], "targets_ig": [], "targets_fb": [],
     "video_ready": False, "detected_clips": [],
-    "raw_path": "raw_input.mp4", "multi_videos": []
+    "raw_path": "raw_input.mp4", "multi_videos": [],
+    "yt_auth_channel": None,
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ═══════════════════════════════════════════
-# 📈 TRENDING TAGS
+# 🔑 YOUTUBE OAuth — FIXED (No PKCE)
 # ═══════════════════════════════════════════
-TRENDING_TAGS = {
-    "Astrology / Vashikaran": [
-        "#astrology","#vashikaran","#loveproblemsolution","#loveback",
-        "#blackmagic","#spiritualhealing","#astrologer","#jyotish",
-        "#shorts","#viral","#trending","#reels","#astrologerji"
-    ],
-    "Motivation": [
-        "#motivation","#success","#mindset","#hustle","#grind",
-        "#positivity","#selfimprovement","#growthmindset",
-        "#inspirational","#shorts","#viral","#trending","#reels"
-    ],
-    "Health / Fitness": [
-        "#fitness","#health","#workout","#gym","#weightloss",
-        "#healthylifestyle","#yoga","#diet","#shorts","#viral","#reels"
-    ],
-    "Tech / AI": [
-        "#ai","#technology","#chatgpt","#tech","#coding",
-        "#programming","#shorts","#viral","#trending","#reels"
-    ],
-    "Custom": []
-}
 
-# ═══════════════════════════════════════════
-# 🔑 YOUTUBE AUTH
-# ═══════════════════════════════════════════
+def get_client_info():
+    secret_path = get_google_secret_path()
+    with open(secret_path) as f:
+        data = json.load(f)
+    info = data.get("web") or data.get("installed")
+    return info["client_id"], info["client_secret"]
+
 def get_yt_credentials(channel_label):
     token_path = os.path.join(PATHS["yt_acc"], f"{channel_label}.pickle")
-    creds = None
-    if os.path.exists(token_path):
-        with open(token_path, 'rb') as f:
-            creds = pickle.load(f)
+    if not os.path.exists(token_path):
+        return None
+    with open(token_path, 'rb') as f:
+        creds = pickle.load(f)
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
             with open(token_path, 'wb') as f:
                 pickle.dump(creds, f)
         except Exception:
-            creds = None
+            return None
     return creds
 
-def login_yt(channel_label):
-    APP_URL = "https://guruji-astrologer-woafgd6jcjcjpv8bbdmpks.streamlit.app"
+def handle_oauth_callback():
+    """Sabse pehle run hota hai — URL mein code ho to token exchange karo"""
+    params = st.query_params
+    if "code" not in params:
+        return
+
+    channel_label = st.session_state.get("yt_auth_channel")
+    if not channel_label:
+        st.error("❌ Session lost! Phir se channel naam daal ke login karo.")
+        st.query_params.clear()
+        return
+
     token_path = os.path.join(PATHS["yt_acc"], f"{channel_label}.pickle")
 
-    secret_file_path = get_google_secret_path()
-
     try:
-        flow = Flow.from_client_secrets_file(
-            secret_file_path,
+        client_id, client_secret = get_client_info()
+
+        # Direct HTTP token exchange — PKCE bilkul nahi
+        token_response = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code":          params["code"],
+                "client_id":     client_id,
+                "client_secret": client_secret,
+                "redirect_uri":  APP_URL,
+                "grant_type":    "authorization_code",
+            }
+        )
+        token_data = token_response.json()
+
+        if "access_token" not in token_data:
+            st.error(f"❌ Token Error: {token_data}")
+            st.query_params.clear()
+            return
+
+        creds = Credentials(
+            token=token_data["access_token"],
+            refresh_token=token_data.get("refresh_token"),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
             scopes=[
-                'https://www.googleapis.com/auth/youtube.upload',
-                'https://www.googleapis.com/auth/youtube.force-ssl'
-            ],
-            redirect_uri=APP_URL
+                "https://www.googleapis.com/auth/youtube.upload",
+                "https://www.googleapis.com/auth/youtube.force-ssl",
+            ]
         )
 
-        auth_url, _ = flow.authorization_url(
-            prompt='consent',
-            access_type='offline',
-            include_granted_scopes='true'
-        )
+        with open(token_path, 'wb') as f:
+            pickle.dump(creds, f)
 
-        st.link_button(f"🚀 LOGIN YouTube: {channel_label.upper()}", auth_url)
-
-        query_params = st.query_params
-
-        if "code" in query_params:
-            flow.fetch_token(code=query_params["code"])
-
-            with open(token_path, 'wb') as f:
-                pickle.dump(flow.credentials, f)
-
-            st.success("✅ YouTube Account Connected Successfully!")
-            st.rerun()
+        st.query_params.clear()
+        st.session_state["yt_auth_channel"] = None
+        st.success(f"✅ YouTube '{channel_label}' connected!")
+        st.rerun()
 
     except Exception as e:
-        st.error(f"YT Login Error: {e}")
+        st.error(f"OAuth Error: {e}")
+        st.query_params.clear()
+
+def login_yt(channel_label):
+    """Auth URL banao aur user ko dikhao — PKCE nahi"""
+    try:
+        client_id, _ = get_client_info()
+
+        st.session_state["yt_auth_channel"] = channel_label
+
+        import urllib.parse
+        auth_params = urllib.parse.urlencode({
+            "client_id":     client_id,
+            "redirect_uri":  APP_URL,
+            "response_type": "code",
+            "scope": (
+                "https://www.googleapis.com/auth/youtube.upload "
+                "https://www.googleapis.com/auth/youtube.force-ssl"
+            ),
+            "access_type": "offline",
+            "prompt":       "consent",
+        })
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{auth_params}"
+
+        st.link_button(f"🚀 Google se LOGIN: {channel_label.upper()}", auth_url)
+        st.info("👆 Button dabao → Google account se login karo → wapas aao → ✅ done!")
+
+    except Exception as e:
+        st.error(f"Login setup error: {e}")
 
 # ═══════════════════════════════════════════
 # ⬇️ YOUTUBE DOWNLOAD (403 FIX)
 # ═══════════════════════════════════════════
 def download_youtube_video(url, output_path):
-    """
-    YouTube video download with 403 fix.
-    Tries multiple strategies in order.
-    """
     strategies = [
-        # Strategy 1: Android client + simple format
         {
             'outtmpl': output_path,
             'format': 'best[ext=mp4]/best',
             'merge_output_format': 'mp4',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android'],
-                }
-            },
+            'extractor_args': {'youtube': {'player_client': ['android']}},
             'http_headers': {
-                'User-Agent': (
-                    'Mozilla/5.0 (Linux; Android 11; Pixel 5) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/90.0.4430.91 Mobile Safari/537.36'
-                ),
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 Chrome/90.0.4430.91 Mobile Safari/537.36',
             },
-            'retries': 3,
-            'fragment_retries': 3,
-            'ignoreerrors': False,
+            'retries': 3, 'fragment_retries': 3,
         },
-        # Strategy 2: iOS client
         {
             'outtmpl': output_path,
             'format': 'best[ext=mp4]/best',
             'merge_output_format': 'mp4',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios'],
-                }
-            },
-            'retries': 3,
-            'fragment_retries': 3,
-            'ignoreerrors': False,
+            'extractor_args': {'youtube': {'player_client': ['ios']}},
+            'retries': 3, 'fragment_retries': 3,
         },
-        # Strategy 3: web client fallback
         {
             'outtmpl': output_path,
-            'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best',
+            'format': 'best[height<=720][ext=mp4]/best',
             'merge_output_format': 'mp4',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web'],
-                }
-            },
+            'extractor_args': {'youtube': {'player_client': ['web']}},
             'http_headers': {
-                'User-Agent': (
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/120.0.0.0 Safari/537.36'
-                ),
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
             },
-            'retries': 5,
-            'fragment_retries': 5,
-            'ignoreerrors': False,
+            'retries': 5, 'fragment_retries': 5,
         },
     ]
-
     last_error = None
     for i, opts in enumerate(strategies):
         try:
-            # Remove old file if exists from previous failed attempt
             if os.path.exists(output_path):
                 os.remove(output_path)
             with YoutubeDL(opts) as ydl:
@@ -203,9 +202,8 @@ def download_youtube_video(url, output_path):
                 return True, None
         except Exception as e:
             last_error = str(e)
-            st.warning(f"⚠️ Strategy {i+1} failed: {str(e)[:100]}... Trying next...")
+            st.warning(f"⚠️ Strategy {i+1} failed, next try...")
             time.sleep(1)
-
     return False, last_error
 
 # ═══════════════════════════════════════════
@@ -221,8 +219,7 @@ def remove_watermark(input_path, output_path):
     )
     cmd = ['ffmpeg','-y','-i',input_path,'-vf',corner_filters,
            '-c:v','libx264','-preset','ultrafast','-c:a','aac',output_path]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode == 0:
+    if subprocess.run(cmd, capture_output=True, text=True).returncode == 0:
         return True
     blur_filter = (
         "[0:v]split=4[v0][v1][v2][v3];"
@@ -256,11 +253,9 @@ def detect_best_moments(video_path, num_clips=7, clip_len=45):
     if duration == 0:
         return []
     candidate_times = set()
-
     r = subprocess.run([
         'ffmpeg','-i',video_path,
-        '-vf','select=gt(scene\\,0.3),showinfo',
-        '-f','null','-'
+        '-vf','select=gt(scene\\,0.3),showinfo','-f','null','-'
     ], capture_output=True, text=True)
     for line in r.stderr.splitlines():
         if 'pts_time' in line:
@@ -269,7 +264,6 @@ def detect_best_moments(video_path, num_clips=7, clip_len=45):
                 candidate_times.add(round(t, 1))
             except Exception:
                 pass
-
     seg = 5
     loud_scores = []
     for i in range(int(duration // seg)):
@@ -285,16 +279,13 @@ def detect_best_moments(video_path, num_clips=7, clip_len=45):
                 try: rms = float(line.split('=')[1])
                 except: pass
         loud_scores.append((start, rms))
-
     loud_scores.sort(key=lambda x: x[1], reverse=True)
     for start, _ in loud_scores[:int(num_clips * 1.5)]:
         candidate_times.add(round(start, 1))
-
     candidates = sorted(candidate_times)
     if not candidates:
         step = duration / (num_clips + 1)
         candidates = [round(i * step, 1) for i in range(1, num_clips + 1)]
-
     selected, last_end = [], -clip_len
     for t in candidates:
         start = max(0, t - 5)
@@ -302,7 +293,6 @@ def detect_best_moments(video_path, num_clips=7, clip_len=45):
         if start >= last_end and len(selected) < num_clips:
             selected.append((round(start,1), round(end,1)))
             last_end = end
-
     selected.sort()
     return selected[:num_clips]
 
@@ -318,11 +308,9 @@ def extract_clip(video_path, start, end, out_path):
 def brand_video(input_p, output_p, h_txt, owner_name, owner_phone):
     def safe(s):
         return s.replace(":", "\\:").replace("'","").replace('"',"").replace("+","\\+")
-
     h_safe     = safe(h_txt)
     name_safe  = safe(owner_name)
     phone_safe = safe(owner_phone)
-
     vf = (
         f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
         f"drawbox=y=0:color=black@0.85:width=iw:height=300:t=fill,"
@@ -334,10 +322,8 @@ def brand_video(input_p, output_p, h_txt, owner_name, owner_phone):
         f"drawtext=text='{phone_safe}':x=(w-text_w)/2:y=h-155:fontsize=72:"
         f"fontcolor=yellow:borderw=3:bordercolor=black"
     )
-
     cmd = ['ffmpeg','-y','-i',input_p,'-vf',vf,
-           '-c:v','libx264','-preset','ultrafast',
-           '-c:a','aac','-t','59', output_p]
+           '-c:v','libx264','-preset','ultrafast','-c:a','aac','-t','59', output_p]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         st.error(f"Branding error: {r.stderr[-300:]}")
@@ -425,14 +411,12 @@ def process_and_upload(
 ):
     log = []
     clip_title = f"{h_text} - Part {clip_idx+1}"
-
     raw_clip   = os.path.join(PATHS["clips"],  f"clip{clip_idx}_raw.mp4")
     clean_clip = os.path.join(PATHS["clips"],  f"clip{clip_idx}_clean.mp4")
     final_clip = os.path.join(PATHS["output"], f"clip{clip_idx}_final.mp4")
 
     if clip_start is not None:
-        ok = extract_clip(video_path, clip_start, clip_end, raw_clip)
-        if not ok:
+        if not extract_clip(video_path, clip_start, clip_end, raw_clip):
             st.error(f"Clip {clip_idx+1} extract fail!")
             return log
         work = raw_clip
@@ -445,7 +429,7 @@ def process_and_upload(
             work = clean_clip if ok2 else work
             if not ok2: st.warning("WM removal fail, original use ho raha hai.")
 
-    with st.spinner("✏️ Naam aur number add ho raha hai..."):
+    with st.spinner("✏️ Branding add ho raha hai..."):
         if not brand_video(work, final_clip, h_text, owner_name, owner_phone):
             st.error("Branding fail!")
             return log
@@ -474,7 +458,7 @@ def process_and_upload(
                     ig_data["user_id"], ig_data["token"], pub_url
                 )
                 if res == "IG_NO_URL":
-                    st.warning(f"📸 {ig}: Public URL set nahi. Sidebar mein daalo.")
+                    st.warning(f"📸 {ig}: Public URL set nahi.")
                 elif "Error" not in str(res):
                     st.success(f"✅ Instagram {ig} → ID: {res}")
                     log.append(("Instagram", ig, "✅", str(res)))
@@ -502,34 +486,72 @@ def process_and_upload(
     for tmp in [raw_clip, clean_clip]:
         if os.path.exists(tmp) and tmp != final_clip:
             os.remove(tmp)
-
     return log
 
+# ══════════════════════════════════════════════
+# 🚀 OAUTH CALLBACK — MUST BE BEFORE set_page_config
+# ══════════════════════════════════════════════
+handle_oauth_callback()
+
 # ═══════════════════════════════════════════════════
-# 🎨 UI
+# 🎨 UI STARTS HERE
 # ═══════════════════════════════════════════════════
 st.set_page_config(page_title="GURUJI BLAST v10", layout="wide", page_icon="🔱")
+
+TRENDING_TAGS = {
+    "Astrology / Vashikaran": [
+        "#astrology","#vashikaran","#loveproblemsolution","#loveback",
+        "#blackmagic","#spiritualhealing","#astrologer","#jyotish",
+        "#shorts","#viral","#trending","#reels","#astrologerji"
+    ],
+    "Motivation": [
+        "#motivation","#success","#mindset","#hustle","#grind",
+        "#positivity","#selfimprovement","#growthmindset",
+        "#inspirational","#shorts","#viral","#trending","#reels"
+    ],
+    "Health / Fitness": [
+        "#fitness","#health","#workout","#gym","#weightloss",
+        "#healthylifestyle","#yoga","#diet","#shorts","#viral","#reels"
+    ],
+    "Tech / AI": [
+        "#ai","#technology","#chatgpt","#tech","#coding",
+        "#programming","#shorts","#viral","#trending","#reels"
+    ],
+    "Custom": []
+}
 
 with st.sidebar:
     st.header("⚙️ ACCOUNT MANAGER")
     tab_yt, tab_ig, tab_fb = st.tabs(["▶️ YouTube","📸 Instagram","📘 Facebook"])
 
     with tab_yt:
-        new_yt = st.text_input("Channel Name", key="new_yt")
-        if st.button("➕ Add YouTube Account"):
-            if new_yt.strip(): login_yt(new_yt.strip())
-            else: st.warning("Name daalo!")
+        st.markdown("**YouTube Channel Add Karo**")
+        new_yt = st.text_input("Channel ka naam", key="new_yt", placeholder="e.g. mera_channel")
+        if st.button("➕ Login Link Banao"):
+            if new_yt.strip():
+                login_yt(new_yt.strip())
+            else:
+                st.warning("Pehle channel naam daalo!")
+        st.divider()
         yt_accounts = [f.replace(".pickle","") for f in os.listdir(PATHS['yt_acc']) if f.endswith(".pickle")]
         if yt_accounts:
-            st.success(f"✅ {len(yt_accounts)} account(s)")
-            for a in yt_accounts: st.caption(f"• {a}")
+            st.success(f"✅ {len(yt_accounts)} account(s) connected")
+            for a in yt_accounts:
+                c1, c2 = st.columns([3,1])
+                with c1: st.caption(f"• {a}")
+                with c2:
+                    if st.button("🗑️", key=f"del_{a}"):
+                        os.remove(os.path.join(PATHS['yt_acc'], f"{a}.pickle"))
+                        st.rerun()
+        else:
+            st.info("Koi account nahi hai abhi.")
 
     with tab_ig:
-        st.info("Instagram Business account + Graph API token chahiye.")
-        ig_uid  = st.text_input("Instagram User ID",  key="ig_uid")
-        ig_tok  = st.text_input("Access Token",        key="ig_tok",  type="password")
+        st.info("Instagram Business + Graph API token chahiye.")
+        ig_uid  = st.text_input("Instagram User ID",    key="ig_uid")
+        ig_tok  = st.text_input("Access Token",          key="ig_tok", type="password")
         ig_url  = st.text_input("Public Video Base URL", key="ig_url")
-        ig_name = st.text_input("Label",               key="ig_name")
+        ig_name = st.text_input("Label",                 key="ig_name")
         if st.button("💾 Save Instagram"):
             if ig_uid and ig_tok and ig_name:
                 with open(f"accounts/ig_{ig_name}.json","w") as f:
@@ -538,9 +560,9 @@ with st.sidebar:
 
     with tab_fb:
         st.info("Facebook Page Access Token chahiye.")
-        fb_pid  = st.text_input("Page ID",            key="fb_pid")
-        fb_tok  = st.text_input("Page Access Token",  key="fb_tok", type="password")
-        fb_name = st.text_input("Label",              key="fb_name")
+        fb_pid  = st.text_input("Page ID",           key="fb_pid")
+        fb_tok  = st.text_input("Page Access Token", key="fb_tok", type="password")
+        fb_name = st.text_input("Label",             key="fb_name")
         if st.button("💾 Save Facebook"):
             if fb_pid and fb_tok and fb_name:
                 with open(f"accounts/fb_{fb_name}.json","w") as f:
@@ -551,43 +573,33 @@ with st.sidebar:
     st.caption("⚠️ client_secret.json kabhi share mat karo!")
 
 st.title("🔱 GURUJI HYBRID BLAST v10.0")
-st.caption("Video → Watermark Remove → Naam+Number Brand → YouTube + Instagram + Facebook — Ek Click Mein! 🚀")
+st.caption("Video → Watermark Remove → Branding → YouTube + Instagram + Facebook — Ek Click Mein! 🚀")
 
-st.subheader("👤 Step 1: Aapki Details (Video pe dikhegi)")
+st.subheader("👤 Step 1: Aapki Details")
 col_n, col_p = st.columns(2)
 with col_n:
     owner_name  = st.text_input("📛 Aapka Naam",   value="Rahul Sadak")
 with col_p:
     owner_phone = st.text_input("📞 Phone Number", value="+91 87509334718")
+st.info(f"✅ Har video pe dikhega: **{owner_name}** | **{owner_phone}**")
 
-st.info(f"✅ Har video pe neeche dikhega: **{owner_name}** | **{owner_phone}**")
-
-st.subheader("📹 Step 2: Video(s) Upload Karo")
+st.subheader("📹 Step 2: Video Upload")
 upload_mode = st.radio("Mode", ["Single Video / Link", "Multiple Videos (Bulk)"], horizontal=True)
-
 video_queue = []
+raw_path = st.session_state.raw_path
 
 if upload_mode == "Single Video / Link":
     source = st.radio("Source", ["YouTube Link","Device se Upload"], horizontal=True)
-    raw_path = st.session_state.raw_path
-
     if source == "YouTube Link":
         v_url = st.text_input("🔗 YouTube / Shorts Link")
         if v_url and st.button("⬇️ Download"):
-            with st.spinner("⬇️ Downloading video... (thoda wait karo)"):
+            with st.spinner("⬇️ Downloading..."):
                 success, error = download_youtube_video(v_url, raw_path)
                 if success:
                     st.session_state.video_ready = True
-                    st.success("✅ Video Download Ho Gayi!")
+                    st.success("✅ Video Ready!")
                 else:
-                    st.error(
-                        f"❌ Download fail hua!\n\n"
-                        f"**Error:** {error}\n\n"
-                        f"**Solutions:**\n"
-                        f"- Device se upload karo (YouTube Shorts download block hoti hain)\n"
-                        f"- Alag YouTube link try karo\n"
-                        f"- yt-dlp update karo: `pip install -U yt-dlp`"
-                    )
+                    st.error(f"❌ Download fail: {error}\n\nDevice se upload karo.")
     else:
         u_file = st.file_uploader("Video Upload", type=["mp4","mov","avi"])
         if u_file:
@@ -600,13 +612,9 @@ if upload_mode == "Single Video / Link":
         st.info(f"📊 Duration: {int(dur//60)}m {int(dur%60)}s")
         st.video(raw_path)
         video_queue = [raw_path]
-
 else:
-    multi_files = st.file_uploader(
-        "📂 Multiple Videos Upload Karo (sab ek saath select karo)",
-        type=["mp4","mov","avi"],
-        accept_multiple_files=True
-    )
+    multi_files = st.file_uploader("📂 Multiple Videos",
+                                   type=["mp4","mov","avi"], accept_multiple_files=True)
     if multi_files:
         st.session_state.multi_videos = []
         for i, mf in enumerate(multi_files):
@@ -614,27 +622,24 @@ else:
             with open(p,"wb") as f: f.write(mf.getbuffer())
             st.session_state.multi_videos.append(p)
         st.success(f"✅ {len(multi_files)} videos ready!")
-        for p in st.session_state.multi_videos:
-            st.video(p)
+        for p in st.session_state.multi_videos: st.video(p)
         video_queue = st.session_state.multi_videos
 
 st.subheader("🧹 Step 3: Watermark Remove")
 remove_wm = st.toggle("Watermark hatao", value=True)
 
 if upload_mode == "Single Video / Link":
-    st.subheader("✂️ Step 4: Auto Clip Detection (Long video ke liye)")
+    st.subheader("✂️ Step 4: Auto Clip Detection")
     use_clips = st.toggle("Long video se best clips auto-cut karo", value=False)
     if use_clips:
         col_a, col_b = st.columns(2)
         with col_a: num_clips   = st.slider("Clips count",          3, 10, 7)
         with col_b: clip_length = st.slider("Clip length (seconds)",15, 59, 45)
-
         if st.button("🔍 Best Moments Dhundo!", disabled=not st.session_state.video_ready):
-            with st.spinner("Video analyze ho rahi hai... (1-2 min)"):
+            with st.spinner("Analyzing... (1-2 min)"):
                 clips = detect_best_moments(raw_path, num_clips, clip_length)
                 st.session_state.detected_clips = clips
             st.success(f"✅ {len(clips)} moments mili!")
-
         if st.session_state.detected_clips:
             st.markdown("**Clips (adjust kar sakte ho):**")
             edited = []
@@ -648,12 +653,11 @@ if upload_mode == "Single Video / Link":
         st.session_state.detected_clips = []
 else:
     st.subheader("✂️ Step 4: Auto Clip")
-    st.info("Multiple mode mein har video directly upload hogi (no clipping).")
+    st.info("Multiple mode mein har video directly upload hogi.")
     use_clips = False
 
 st.subheader("✏️ Step 5: Video Headline")
-h_text = st.text_input("💎 TOP TEXT (Headline)", "LOVE PROBLEM SOLUTION")
-st.caption(f"Video pe dikhega → TOP: {h_text} | BOTTOM: {owner_name} | {owner_phone}")
+h_text = st.text_input("💎 TOP TEXT", "LOVE PROBLEM SOLUTION")
 
 st.subheader("📈 Step 6: SEO Tags")
 niche = st.selectbox("Niche", list(TRENDING_TAGS.keys()))
@@ -662,10 +666,10 @@ if niche == "Custom":
     selected_tags = [t.strip() for t in raw_tags.splitlines() if t.strip()]
 else:
     selected_tags = st.multiselect("Tags:", TRENDING_TAGS[niche], default=TRENDING_TAGS[niche])
-comment_text = st.text_input("💬 Auto-Comment", f"📲 {owner_name} se contact karein | {owner_phone} | #shorts #viral")
+comment_text = st.text_input("💬 Auto-Comment",
+    f"📲 {owner_name} se contact karein | {owner_phone} | #shorts #viral")
 
-st.subheader("🎯 Step 7: Platforms — Ek Click Mein Teeno!")
-
+st.subheader("🎯 Step 7: Platforms Select Karo")
 yt_accounts = [f.replace(".pickle","") for f in os.listdir(PATHS['yt_acc']) if f.endswith(".pickle")]
 ig_accounts = [f[3:-5] for f in os.listdir("accounts") if f.startswith("ig_") and f.endswith(".json")]
 fb_accounts = [f[3:-5] for f in os.listdir("accounts") if f.startswith("fb_") and f.endswith(".json")]
@@ -673,7 +677,8 @@ fb_accounts = [f[3:-5] for f in os.listdir("accounts") if f.startswith("fb_") an
 col_yt, col_ig, col_fb = st.columns(3)
 with col_yt:
     st.markdown("**▶️ YouTube**")
-    yt_sel = st.multiselect("Channels", yt_accounts or ["(Add in sidebar)"], default=st.session_state.targets_yt, key="yt_sel")
+    yt_sel = st.multiselect("Channels", yt_accounts or ["(Add in sidebar)"],
+                            default=st.session_state.targets_yt, key="yt_sel")
 with col_ig:
     st.markdown("**📸 Instagram**")
     ig_sel = st.multiselect("Accounts", ig_accounts or ["(Add in sidebar)"], key="ig_sel")
@@ -688,7 +693,7 @@ if video_queue or st.session_state.detected_clips:
     n_videos = len(clips_to_do) if clips_to_do else len(video_queue) if video_queue else 0
     total_uploads = n_videos * (len(yt_sel) + len(ig_sel) + len(fb_sel))
     if n_videos > 0:
-        st.info(f"📊 **Preview:** {n_videos} video(s) × {len(yt_sel)+len(ig_sel)+len(fb_sel)} platform accounts = **{total_uploads} total uploads**")
+        st.info(f"📊 **{n_videos} video(s)** × **{len(yt_sel)+len(ig_sel)+len(fb_sel)} accounts** = **{total_uploads} total uploads**")
 
 if st.button("🔥 EK CLICK MEIN TEENO PE UPLOAD KAR!", use_container_width=True, type="primary"):
     if not video_queue and not st.session_state.video_ready:
@@ -696,24 +701,20 @@ if st.button("🔥 EK CLICK MEIN TEENO PE UPLOAD KAR!", use_container_width=True
     elif use_clips and not st.session_state.detected_clips:
         st.error("❌ Pehle 'Best Moments Dhundo!' dabao!")
     elif not any([yt_sel, ig_sel, fb_sel]):
-        st.error("❌ Koi platform/channel select nahi kiya!")
+        st.error("❌ Koi platform select nahi kiya!")
     else:
         all_log = []
-
         if use_clips and st.session_state.detected_clips:
-            jobs = [(raw_path, i, s, e)
-                    for i,(s,e) in enumerate(st.session_state.detected_clips)]
+            jobs = [(raw_path, i, s, e) for i,(s,e) in enumerate(st.session_state.detected_clips)]
         elif video_queue:
             jobs = [(vp, i, None, None) for i, vp in enumerate(video_queue)]
         else:
             jobs = []
 
         prog = st.progress(0, "Shuru ho raha hai...")
-
         for job_idx, (vpath, cidx, cstart, cend) in enumerate(jobs):
             label = f"Clip {cidx+1}" if cstart is not None else os.path.basename(vpath)
             st.markdown(f"### 🎬 Processing: {label} ({job_idx+1}/{len(jobs)})")
-
             result = process_and_upload(
                 vpath, cidx, cstart, cend,
                 h_text, owner_name, owner_phone,
@@ -734,7 +735,7 @@ if st.button("🔥 EK CLICK MEIN TEENO PE UPLOAD KAR!", use_container_width=True
             st.write(f"{status} {icon} **{platform}** | {channel} → {detail}")
 
         st.balloons()
-        st.session_state.video_ready   = False
+        st.session_state.video_ready    = False
         st.session_state.detected_clips = []
         st.session_state.multi_videos   = []
         st.success(f"🎉 Blast complete! {len(success)} uploads successful!")
