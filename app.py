@@ -9,9 +9,6 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# ═══════════════════════════════════════════
-# 📁 PATHS & SESSION STATE
-# ═══════════════════════════════════════════
 PATHS = {
     "yt_acc": "accounts/youtube",
     "secret": "client_secret.json",
@@ -46,10 +43,6 @@ for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ═══════════════════════════════════════════
-# 🔑 YOUTUBE OAuth — FIXED (No PKCE)
-# ═══════════════════════════════════════════
-
 def get_client_info():
     secret_path = get_google_secret_path()
     with open(secret_path) as f:
@@ -73,12 +66,13 @@ def get_yt_credentials(channel_label):
     return creds
 
 def handle_oauth_callback():
-    """Sabse pehle run hota hai — URL mein code ho to token exchange karo"""
     params = st.query_params
     if "code" not in params:
         return
 
-    channel_label = st.session_state.get("yt_auth_channel")
+    # ✅ KEY FIX: state parameter se channel_label lo
+    channel_label = params.get("state", "")
+
     if not channel_label:
         st.error("❌ Session lost! Phir se channel naam daal ke login karo.")
         st.query_params.clear()
@@ -89,7 +83,6 @@ def handle_oauth_callback():
     try:
         client_id, client_secret = get_client_info()
 
-        # Direct HTTP token exchange — PKCE bilkul nahi
         token_response = requests.post(
             "https://oauth2.googleapis.com/token",
             data={
@@ -132,10 +125,8 @@ def handle_oauth_callback():
         st.query_params.clear()
 
 def login_yt(channel_label):
-    """Auth URL banao aur user ko dikhao — PKCE nahi"""
     try:
         client_id, _ = get_client_info()
-
         st.session_state["yt_auth_channel"] = channel_label
 
         import urllib.parse
@@ -149,46 +140,37 @@ def login_yt(channel_label):
             ),
             "access_type": "offline",
             "prompt":       "consent",
+            # ✅ KEY FIX: state mein channel_label pass karo
+            "state":        channel_label,
         })
         auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{auth_params}"
 
         st.link_button(f"🚀 Google se LOGIN: {channel_label.upper()}", auth_url)
-        st.info("👆 Button dabao → Google account se login karo → wapas aao → ✅ done!")
+        st.info("👆 Button dabao → Google login karo → wapas aao → ✅ done!")
 
     except Exception as e:
         st.error(f"Login setup error: {e}")
 
-# ═══════════════════════════════════════════
-# ⬇️ YOUTUBE DOWNLOAD (403 FIX)
-# ═══════════════════════════════════════════
 def download_youtube_video(url, output_path):
     strategies = [
         {
             'outtmpl': output_path,
             'format': 'best[ext=mp4]/best',
-            'merge_output_format': 'mp4',
             'extractor_args': {'youtube': {'player_client': ['android']}},
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 Chrome/90.0.4430.91 Mobile Safari/537.36',
-            },
-            'retries': 3, 'fragment_retries': 3,
+            'http_headers': {'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 Chrome/90.0.4430.91 Mobile Safari/537.36'},
+            'retries': 3,
         },
         {
             'outtmpl': output_path,
             'format': 'best[ext=mp4]/best',
-            'merge_output_format': 'mp4',
             'extractor_args': {'youtube': {'player_client': ['ios']}},
-            'retries': 3, 'fragment_retries': 3,
+            'retries': 3,
         },
         {
             'outtmpl': output_path,
             'format': 'best[height<=720][ext=mp4]/best',
-            'merge_output_format': 'mp4',
             'extractor_args': {'youtube': {'player_client': ['web']}},
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-            },
-            'retries': 5, 'fragment_retries': 5,
+            'retries': 5,
         },
     ]
     last_error = None
@@ -202,13 +184,10 @@ def download_youtube_video(url, output_path):
                 return True, None
         except Exception as e:
             last_error = str(e)
-            st.warning(f"⚠️ Strategy {i+1} failed, next try...")
+            st.warning(f"⚠️ Strategy {i+1} failed...")
             time.sleep(1)
     return False, last_error
 
-# ═══════════════════════════════════════════
-# 🧹 WATERMARK REMOVAL
-# ═══════════════════════════════════════════
 def remove_watermark(input_path, output_path):
     corner_filters = (
         "delogo=x=0:y=0:w=280:h=110,"
@@ -237,9 +216,6 @@ def remove_watermark(input_path, output_path):
             '-c:v','libx264','-preset','ultrafast','-c:a','aac',output_path]
     return subprocess.run(cmd2, capture_output=True, text=True).returncode == 0
 
-# ═══════════════════════════════════════════
-# ✂️ AUTO CLIP DETECTION
-# ═══════════════════════════════════════════
 def get_video_duration(path):
     cmd = ['ffprobe','-v','error','-show_entries','format=duration','-of','json',path]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -253,26 +229,18 @@ def detect_best_moments(video_path, num_clips=7, clip_len=45):
     if duration == 0:
         return []
     candidate_times = set()
-    r = subprocess.run([
-        'ffmpeg','-i',video_path,
-        '-vf','select=gt(scene\\,0.3),showinfo','-f','null','-'
-    ], capture_output=True, text=True)
+    r = subprocess.run(['ffmpeg','-i',video_path,'-vf','select=gt(scene\\,0.3),showinfo','-f','null','-'], capture_output=True, text=True)
     for line in r.stderr.splitlines():
         if 'pts_time' in line:
             try:
                 t = float(line.split('pts_time:')[1].split()[0])
                 candidate_times.add(round(t, 1))
-            except Exception:
-                pass
+            except: pass
     seg = 5
     loud_scores = []
     for i in range(int(duration // seg)):
         start = i * seg
-        r2 = subprocess.run([
-            'ffmpeg','-ss',str(start),'-t',str(seg),'-i',video_path,
-            '-af','astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level',
-            '-f','null','-'
-        ], capture_output=True, text=True)
+        r2 = subprocess.run(['ffmpeg','-ss',str(start),'-t',str(seg),'-i',video_path,'-af','astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level','-f','null','-'], capture_output=True, text=True)
         rms = -60.0
         for line in r2.stderr.splitlines():
             if 'RMS_level' in line:
@@ -297,41 +265,29 @@ def detect_best_moments(video_path, num_clips=7, clip_len=45):
     return selected[:num_clips]
 
 def extract_clip(video_path, start, end, out_path):
-    cmd = ['ffmpeg','-y','-ss',str(start),'-to',str(end),'-i',video_path,
-           '-c:v','libx264','-preset','ultrafast','-c:a','aac',
-           '-avoid_negative_ts','make_zero', out_path]
+    cmd = ['ffmpeg','-y','-ss',str(start),'-to',str(end),'-i',video_path,'-c:v','libx264','-preset','ultrafast','-c:a','aac','-avoid_negative_ts','make_zero', out_path]
     return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
 
-# ═══════════════════════════════════════════
-# 🎬 VIDEO BRANDING
-# ═══════════════════════════════════════════
 def brand_video(input_p, output_p, h_txt, owner_name, owner_phone):
     def safe(s):
         return s.replace(":", "\\:").replace("'","").replace('"',"").replace("+","\\+")
-    h_safe     = safe(h_txt)
-    name_safe  = safe(owner_name)
+    h_safe = safe(h_txt)
+    name_safe = safe(owner_name)
     phone_safe = safe(owner_phone)
     vf = (
         f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
         f"drawbox=y=0:color=black@0.85:width=iw:height=300:t=fill,"
         f"drawbox=y=ih-280:color=black@0.85:width=iw:height=280:t=fill,"
-        f"drawtext=text='{h_safe}':x=(w-text_w)/2:y=80:fontsize=82:"
-        f"fontcolor=gold:borderw=3:bordercolor=black,"
-        f"drawtext=text='{name_safe}':x=(w-text_w)/2:y=h-240:fontsize=68:"
-        f"fontcolor=white:borderw=2:bordercolor=black,"
-        f"drawtext=text='{phone_safe}':x=(w-text_w)/2:y=h-155:fontsize=72:"
-        f"fontcolor=yellow:borderw=3:bordercolor=black"
+        f"drawtext=text='{h_safe}':x=(w-text_w)/2:y=80:fontsize=82:fontcolor=gold:borderw=3:bordercolor=black,"
+        f"drawtext=text='{name_safe}':x=(w-text_w)/2:y=h-240:fontsize=68:fontcolor=white:borderw=2:bordercolor=black,"
+        f"drawtext=text='{phone_safe}':x=(w-text_w)/2:y=h-155:fontsize=72:fontcolor=yellow:borderw=3:bordercolor=black"
     )
-    cmd = ['ffmpeg','-y','-i',input_p,'-vf',vf,
-           '-c:v','libx264','-preset','ultrafast','-c:a','aac','-t','59', output_p]
+    cmd = ['ffmpeg','-y','-i',input_p,'-vf',vf,'-c:v','libx264','-preset','ultrafast','-c:a','aac','-t','59', output_p]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         st.error(f"Branding error: {r.stderr[-300:]}")
     return r.returncode == 0
 
-# ═══════════════════════════════════════════
-# 🚀 YOUTUBE UPLOAD
-# ═══════════════════════════════════════════
 def upload_youtube(video_path, title, channel_label, tags_list, comment_txt):
     try:
         creds = get_yt_credentials(channel_label)
@@ -353,62 +309,39 @@ def upload_youtube(video_path, title, channel_label, tags_list, comment_txt):
         if v_id and comment_txt:
             time.sleep(2)
             yt.commentThreads().insert(part="snippet", body={
-                "snippet":{"videoId":v_id,
-                           "topLevelComment":{"snippet":{"textOriginal":comment_txt}}}
+                "snippet":{"videoId":v_id,"topLevelComment":{"snippet":{"textOriginal":comment_txt}}}
             }).execute()
         return v_id
     except Exception as e:
         return f"Error: {e}"
 
-# ═══════════════════════════════════════════
-# 📘 FACEBOOK UPLOAD
-# ═══════════════════════════════════════════
 def upload_facebook(video_path, title, description, page_id, access_token):
     try:
         url = f"https://graph.facebook.com/v19.0/{page_id}/videos"
         with open(video_path,'rb') as vf:
-            res = requests.post(url, data={
-                "title":title,"description":description,
-                "published":"true","access_token":access_token
-            }, files={"source":vf})
+            res = requests.post(url, data={"title":title,"description":description,"published":"true","access_token":access_token}, files={"source":vf})
         data = res.json()
         return data.get("id", f"Error: {data}")
     except Exception as e:
         return f"Error: {e}"
 
-# ═══════════════════════════════════════════
-# 📱 INSTAGRAM UPLOAD
-# ═══════════════════════════════════════════
 def upload_instagram(video_path, caption, ig_user_id, access_token, video_public_url=""):
     try:
         if not video_public_url:
             return "IG_NO_URL"
-        r1 = requests.post(
-            f"https://graph.facebook.com/v19.0/{ig_user_id}/media",
-            params={"media_type":"REELS","video_url":video_public_url,
-                    "caption":caption,"access_token":access_token}
-        ).json()
+        r1 = requests.post(f"https://graph.facebook.com/v19.0/{ig_user_id}/media",
+            params={"media_type":"REELS","video_url":video_public_url,"caption":caption,"access_token":access_token}).json()
         container_id = r1.get("id")
         if not container_id:
             return f"Error container: {r1}"
         time.sleep(35)
-        r2 = requests.post(
-            f"https://graph.facebook.com/v19.0/{ig_user_id}/media_publish",
-            params={"creation_id":container_id,"access_token":access_token}
-        ).json()
+        r2 = requests.post(f"https://graph.facebook.com/v19.0/{ig_user_id}/media_publish",
+            params={"creation_id":container_id,"access_token":access_token}).json()
         return r2.get("id", f"Error publish: {r2}")
     except Exception as e:
         return f"Error: {e}"
 
-# ═══════════════════════════════════════════
-# 🔁 CORE PIPELINE
-# ═══════════════════════════════════════════
-def process_and_upload(
-    video_path, clip_idx, clip_start, clip_end,
-    h_text, owner_name, owner_phone,
-    remove_wm, selected_tags, comment_text,
-    yt_targets, ig_targets, fb_targets
-):
+def process_and_upload(video_path, clip_idx, clip_start, clip_end, h_text, owner_name, owner_phone, remove_wm, selected_tags, comment_text, yt_targets, ig_targets, fb_targets):
     log = []
     clip_title = f"{h_text} - Part {clip_idx+1}"
     raw_clip   = os.path.join(PATHS["clips"],  f"clip{clip_idx}_raw.mp4")
@@ -427,7 +360,7 @@ def process_and_upload(
         with st.spinner("🧹 Watermark hata raha hai..."):
             ok2 = remove_watermark(work, clean_clip)
             work = clean_clip if ok2 else work
-            if not ok2: st.warning("WM removal fail, original use ho raha hai.")
+            if not ok2: st.warning("WM removal fail.")
 
     with st.spinner("✏️ Branding add ho raha hai..."):
         if not brand_video(work, final_clip, h_text, owner_name, owner_phone):
@@ -452,11 +385,7 @@ def process_and_upload(
             base_url = ig_data.get("base_url","")
             pub_url  = f"{base_url}clip{clip_idx}_final.mp4" if base_url else ""
             with st.spinner(f"📸 Instagram upload: {ig}..."):
-                res = upload_instagram(
-                    final_clip,
-                    f"{clip_title}\n{' '.join(selected_tags)}",
-                    ig_data["user_id"], ig_data["token"], pub_url
-                )
+                res = upload_instagram(final_clip, f"{clip_title}\n{' '.join(selected_tags)}", ig_data["user_id"], ig_data["token"], pub_url)
                 if res == "IG_NO_URL":
                     st.warning(f"📸 {ig}: Public URL set nahi.")
                 elif "Error" not in str(res):
@@ -471,11 +400,7 @@ def process_and_upload(
         if os.path.exists(acc_f):
             with open(acc_f) as f: fb_data = json.load(f)
             with st.spinner(f"📘 Facebook upload: {fb}..."):
-                res = upload_facebook(
-                    final_clip, clip_title,
-                    f"{clip_title}\n{' '.join(selected_tags)}",
-                    fb_data["page_id"], fb_data["token"]
-                )
+                res = upload_facebook(final_clip, clip_title, f"{clip_title}\n{' '.join(selected_tags)}", fb_data["page_id"], fb_data["token"])
                 if "Error" not in str(res):
                     st.success(f"✅ Facebook {fb} → ID: {res}")
                     log.append(("Facebook", fb, "✅", str(res)))
@@ -488,35 +413,21 @@ def process_and_upload(
             os.remove(tmp)
     return log
 
-# ══════════════════════════════════════════════
-# 🚀 OAUTH CALLBACK — MUST BE BEFORE set_page_config
-# ══════════════════════════════════════════════
+# ══════════════════════════════════
+# 🚀 OAUTH CALLBACK - SABSE PEHLE
+# ══════════════════════════════════
 handle_oauth_callback()
 
-# ═══════════════════════════════════════════════════
-# 🎨 UI STARTS HERE
-# ═══════════════════════════════════════════════════
+# ══════════════════════════════════
+# 🎨 UI
+# ══════════════════════════════════
 st.set_page_config(page_title="GURUJI BLAST v10", layout="wide", page_icon="🔱")
 
 TRENDING_TAGS = {
-    "Astrology / Vashikaran": [
-        "#astrology","#vashikaran","#loveproblemsolution","#loveback",
-        "#blackmagic","#spiritualhealing","#astrologer","#jyotish",
-        "#shorts","#viral","#trending","#reels","#astrologerji"
-    ],
-    "Motivation": [
-        "#motivation","#success","#mindset","#hustle","#grind",
-        "#positivity","#selfimprovement","#growthmindset",
-        "#inspirational","#shorts","#viral","#trending","#reels"
-    ],
-    "Health / Fitness": [
-        "#fitness","#health","#workout","#gym","#weightloss",
-        "#healthylifestyle","#yoga","#diet","#shorts","#viral","#reels"
-    ],
-    "Tech / AI": [
-        "#ai","#technology","#chatgpt","#tech","#coding",
-        "#programming","#shorts","#viral","#trending","#reels"
-    ],
+    "Astrology / Vashikaran": ["#astrology","#vashikaran","#loveproblemsolution","#loveback","#blackmagic","#spiritualhealing","#astrologer","#jyotish","#shorts","#viral","#trending","#reels","#astrologerji"],
+    "Motivation": ["#motivation","#success","#mindset","#hustle","#grind","#positivity","#selfimprovement","#growthmindset","#inspirational","#shorts","#viral","#trending","#reels"],
+    "Health / Fitness": ["#fitness","#health","#workout","#gym","#weightloss","#healthylifestyle","#yoga","#diet","#shorts","#viral","#reels"],
+    "Tech / AI": ["#ai","#technology","#chatgpt","#tech","#coding","#programming","#shorts","#viral","#trending","#reels"],
     "Custom": []
 }
 
@@ -548,10 +459,10 @@ with st.sidebar:
 
     with tab_ig:
         st.info("Instagram Business + Graph API token chahiye.")
-        ig_uid  = st.text_input("Instagram User ID",    key="ig_uid")
-        ig_tok  = st.text_input("Access Token",          key="ig_tok", type="password")
+        ig_uid  = st.text_input("Instagram User ID", key="ig_uid")
+        ig_tok  = st.text_input("Access Token", key="ig_tok", type="password")
         ig_url  = st.text_input("Public Video Base URL", key="ig_url")
-        ig_name = st.text_input("Label",                 key="ig_name")
+        ig_name = st.text_input("Label", key="ig_name")
         if st.button("💾 Save Instagram"):
             if ig_uid and ig_tok and ig_name:
                 with open(f"accounts/ig_{ig_name}.json","w") as f:
@@ -560,9 +471,9 @@ with st.sidebar:
 
     with tab_fb:
         st.info("Facebook Page Access Token chahiye.")
-        fb_pid  = st.text_input("Page ID",           key="fb_pid")
+        fb_pid  = st.text_input("Page ID", key="fb_pid")
         fb_tok  = st.text_input("Page Access Token", key="fb_tok", type="password")
-        fb_name = st.text_input("Label",             key="fb_name")
+        fb_name = st.text_input("Label", key="fb_name")
         if st.button("💾 Save Facebook"):
             if fb_pid and fb_tok and fb_name:
                 with open(f"accounts/fb_{fb_name}.json","w") as f:
@@ -570,7 +481,7 @@ with st.sidebar:
                 st.success("✅ Saved!")
 
     st.divider()
-    st.caption("⚠️ client_secret.json kabhi share mat karo!")
+    st.caption("⚠️ Secrets kabhi share mat karo!")
 
 st.title("🔱 GURUJI HYBRID BLAST v10.0")
 st.caption("Video → Watermark Remove → Branding → YouTube + Instagram + Facebook — Ek Click Mein! 🚀")
@@ -578,7 +489,7 @@ st.caption("Video → Watermark Remove → Branding → YouTube + Instagram + Fa
 st.subheader("👤 Step 1: Aapki Details")
 col_n, col_p = st.columns(2)
 with col_n:
-    owner_name  = st.text_input("📛 Aapka Naam",   value="Rahul Sadak")
+    owner_name  = st.text_input("📛 Aapka Naam", value="Rahul Sadak")
 with col_p:
     owner_phone = st.text_input("📞 Phone Number", value="+91 87509334718")
 st.info(f"✅ Har video pe dikhega: **{owner_name}** | **{owner_phone}**")
@@ -599,7 +510,7 @@ if upload_mode == "Single Video / Link":
                     st.session_state.video_ready = True
                     st.success("✅ Video Ready!")
                 else:
-                    st.error(f"❌ Download fail: {error}\n\nDevice se upload karo.")
+                    st.error(f"❌ Download fail: {error}")
     else:
         u_file = st.file_uploader("Video Upload", type=["mp4","mov","avi"])
         if u_file:
@@ -613,8 +524,7 @@ if upload_mode == "Single Video / Link":
         st.video(raw_path)
         video_queue = [raw_path]
 else:
-    multi_files = st.file_uploader("📂 Multiple Videos",
-                                   type=["mp4","mov","avi"], accept_multiple_files=True)
+    multi_files = st.file_uploader("📂 Multiple Videos", type=["mp4","mov","avi"], accept_multiple_files=True)
     if multi_files:
         st.session_state.multi_videos = []
         for i, mf in enumerate(multi_files):
@@ -633,8 +543,8 @@ if upload_mode == "Single Video / Link":
     use_clips = st.toggle("Long video se best clips auto-cut karo", value=False)
     if use_clips:
         col_a, col_b = st.columns(2)
-        with col_a: num_clips   = st.slider("Clips count",          3, 10, 7)
-        with col_b: clip_length = st.slider("Clip length (seconds)",15, 59, 45)
+        with col_a: num_clips   = st.slider("Clips count", 3, 10, 7)
+        with col_b: clip_length = st.slider("Clip length (seconds)", 15, 59, 45)
         if st.button("🔍 Best Moments Dhundo!", disabled=not st.session_state.video_ready):
             with st.spinner("Analyzing... (1-2 min)"):
                 clips = detect_best_moments(raw_path, num_clips, clip_length)
@@ -666,8 +576,7 @@ if niche == "Custom":
     selected_tags = [t.strip() for t in raw_tags.splitlines() if t.strip()]
 else:
     selected_tags = st.multiselect("Tags:", TRENDING_TAGS[niche], default=TRENDING_TAGS[niche])
-comment_text = st.text_input("💬 Auto-Comment",
-    f"📲 {owner_name} se contact karein | {owner_phone} | #shorts #viral")
+comment_text = st.text_input("💬 Auto-Comment", f"📲 {owner_name} se contact karein | {owner_phone} | #shorts #viral")
 
 st.subheader("🎯 Step 7: Platforms Select Karo")
 yt_accounts = [f.replace(".pickle","") for f in os.listdir(PATHS['yt_acc']) if f.endswith(".pickle")]
@@ -677,8 +586,7 @@ fb_accounts = [f[3:-5] for f in os.listdir("accounts") if f.startswith("fb_") an
 col_yt, col_ig, col_fb = st.columns(3)
 with col_yt:
     st.markdown("**▶️ YouTube**")
-    yt_sel = st.multiselect("Channels", yt_accounts or ["(Add in sidebar)"],
-                            default=st.session_state.targets_yt, key="yt_sel")
+    yt_sel = st.multiselect("Channels", yt_accounts or ["(Add in sidebar)"], default=st.session_state.targets_yt, key="yt_sel")
 with col_ig:
     st.markdown("**📸 Instagram**")
     ig_sel = st.multiselect("Accounts", ig_accounts or ["(Add in sidebar)"], key="ig_sel")
@@ -715,12 +623,7 @@ if st.button("🔥 EK CLICK MEIN TEENO PE UPLOAD KAR!", use_container_width=True
         for job_idx, (vpath, cidx, cstart, cend) in enumerate(jobs):
             label = f"Clip {cidx+1}" if cstart is not None else os.path.basename(vpath)
             st.markdown(f"### 🎬 Processing: {label} ({job_idx+1}/{len(jobs)})")
-            result = process_and_upload(
-                vpath, cidx, cstart, cend,
-                h_text, owner_name, owner_phone,
-                remove_wm, selected_tags, comment_text,
-                yt_sel, ig_sel, fb_sel
-            )
+            result = process_and_upload(vpath, cidx, cstart, cend, h_text, owner_name, owner_phone, remove_wm, selected_tags, comment_text, yt_sel, ig_sel, fb_sel)
             all_log.extend(result)
             prog.progress((job_idx+1)/len(jobs), f"{job_idx+1}/{len(jobs)} done!")
 
